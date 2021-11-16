@@ -62,6 +62,7 @@ class PSUControl(octoprint.plugin.StartupPlugin,
         self._check_psu_state_thread = None
         self._check_psu_state_event = threading.Event()
         self._idleTimer = None
+        self._delayTimer = None
         self._waitForHeaters = False
         self._skipIdleTimer = False
         self._configuredGPIOPins = {}
@@ -312,10 +313,7 @@ class PSUControl(octoprint.plugin.StartupPlugin,
                 self._event_bus.fire(event, payload=dict(isPSUOn=self.isPSUOn))
                 
             if (old_isPSUOn != self.isPSUOn) and self.isPSUOn and self.config['connectOnExternalPowerOn'] and self._printer.is_closed_or_error():
-                time.sleep(0.1 + self.config['postOnDelay'])
-                self._printer.connect()
-                time.sleep(0.1)
-
+                self._post_on()
             if (old_isPSUOn != self.isPSUOn) and self.isPSUOn:
                 self._start_idle_timer()
             elif (old_isPSUOn != self.isPSUOn) and not self.isPSUOn:
@@ -335,10 +333,22 @@ class PSUControl(octoprint.plugin.StartupPlugin,
             self._idleTimer.start()
 
 
+    def _start_delay_timer(self):
+        self._stop_delay_timer()
+        self._delayTimer = ResettableTimer(self.config['postOnDelay'], self._post_on, kwargs={"postOnDelayExpired":True})
+        self._delayTimer.start()
+
+
     def _stop_idle_timer(self):
         if self._idleTimer:
             self._idleTimer.cancel()
             self._idleTimer = None
+
+
+    def _stop_delay_timer(self):
+        if self._delayTimer:
+            self._delayTimer.cancel()
+            self._delayTimer = None
 
 
     def _reset_idle_timer(self):
@@ -348,7 +358,28 @@ class PSUControl(octoprint.plugin.StartupPlugin,
             else:
                 raise Exception()
         except:
-            self._start_idle_timer()
+            self._start_idle_timer()       
+
+
+    def _post_on(self, postOnDelayExpired=False):
+        if self.config['postOnDelay'] <= 0.1:
+            time.sleep(0.1)
+            self.check_psu_state()
+            self._printer.connect()
+            time.sleep(0.1)
+
+            if not self._printer.is_closed_or_error():
+                self._printer.script("psucontrol_post_on", must_be_set=False)
+        elif postOnDelayExpired:
+            self._stop_delay_timer()
+            self.check_psu_state()
+            self._printer.connect()
+            time.sleep(0.1)
+
+            if not self._printer.is_closed_or_error():
+                self._printer.script("psucontrol_post_on", must_be_set=False)
+        else:
+            self._start_delay_timer()
 
 
     def _idle_poweroff(self):
@@ -511,16 +542,7 @@ class PSUControl(octoprint.plugin.StartupPlugin,
             if self.config['sensingMethod'] not in ('GPIO', 'SYSTEM', 'PLUGIN'):
                 self._noSensing_isPSUOn = True
 
-            time.sleep(0.1 + self.config['postOnDelay'])
-
-            self.check_psu_state()
-
-            if self.config['connectOnPowerOn'] and self._printer.is_closed_or_error():
-                self._printer.connect()
-                time.sleep(0.1)
-
-            if not self._printer.is_closed_or_error():
-                self._printer.script("psucontrol_post_on", must_be_set=False)
+        self._post_on()
 
 
     def turn_psu_off(self):
