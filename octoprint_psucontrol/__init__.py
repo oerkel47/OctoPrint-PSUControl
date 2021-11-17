@@ -617,6 +617,13 @@ class PSUControl(octoprint.plugin.StartupPlugin,
              flask.request.method == 'POST' and
              flask.request.values.get('print', 'false') in valid_boolean_trues):
                 self.on_api_command("turnPSUOn", [])
+        elif ( self.config['turnOnWhenApiUploadPrint'] and
+             self.isPSUOn and
+             self._printer.is_closed_or_error() and
+             flask.request.path.startswith('/api/files/') and
+             flask.request.method == 'POST' and
+             flask.request.values.get('print', 'false') in valid_boolean_trues):
+                self._printer.connect()
 
 
     def on_event(self, event, payload):
