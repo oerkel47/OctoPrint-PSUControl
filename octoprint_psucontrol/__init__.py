@@ -12,7 +12,7 @@ import subprocess
 import threading
 import glob
 from flask import make_response, jsonify
-from flask_babel import gettext
+from flask_babel import gettext, to_user_timezone
 import platform
 from octoprint.util import fqfn
 from octoprint.settings import valid_boolean_trues
@@ -103,7 +103,7 @@ class PSUControl(octoprint.plugin.StartupPlugin,
             idleTimeoutWaitTemp = 50,
             turnOnWhenApiUploadPrint = False,
             turnOffWhenError = False,
-            connectOnExternalPowerOn=False
+            ProcessExternalPowerOn=False
         )
 
 
@@ -243,7 +243,7 @@ class PSUControl(octoprint.plugin.StartupPlugin,
         self._check_psu_state_event.set()
 
 
-    def _check_psu_state(self):
+    def _check_psu_state(self):        
         while True:
             old_isPSUOn = self.isPSUOn
 
@@ -312,17 +312,20 @@ class PSUControl(octoprint.plugin.StartupPlugin,
                 event = Events.PLUGIN_PSUCONTROL_PSU_STATE_CHANGED
                 self._event_bus.fire(event, payload=dict(isPSUOn=self.isPSUOn))
                 
-            if (old_isPSUOn != self.isPSUOn) and self.isPSUOn and self.config['connectOnExternalPowerOn'] and self._printer.is_closed_or_error():
-                self._post_on()
             if (old_isPSUOn != self.isPSUOn) and self.isPSUOn:
                 self._start_idle_timer()
+                if not self._check_psu_state_event.is_set():
+                    self._post_on(postOnDelay=self.config['postOnDelay'], externalPowerOn=True)
+                    self._logger.debug('PSU was turned on externally.')
+                else:
+                    self._post_on(postOnDelay=self.config['postOnDelay'])
             elif (old_isPSUOn != self.isPSUOn) and not self.isPSUOn:
                 self._stop_idle_timer()
 
             self._plugin_manager.send_plugin_message(self._identifier, dict(isPSUOn=self.isPSUOn))
-
-            self._check_psu_state_event.wait(self.config['sensePollingInterval'])
             self._check_psu_state_event.clear()
+            self._check_psu_state_event.wait(self.config['sensePollingInterval'])
+
 
 
     def _start_idle_timer(self):
@@ -335,7 +338,7 @@ class PSUControl(octoprint.plugin.StartupPlugin,
 
     def _start_delay_timer(self):
         self._stop_delay_timer()
-        self._delayTimer = ResettableTimer(self.config['postOnDelay'], self._post_on, kwargs={"postOnDelayExpired":True})
+        self._delayTimer = ResettableTimer(self.config['postOnDelay'], self._post_on)
         self._delayTimer.start()
 
 
@@ -358,28 +361,26 @@ class PSUControl(octoprint.plugin.StartupPlugin,
             else:
                 raise Exception()
         except:
-            self._start_idle_timer()       
+            self._start_idle_timer()
 
 
-    def _post_on(self, postOnDelayExpired=False):
-        if self.config['postOnDelay'] <= 0.1:
-            time.sleep(0.1)
-            self.check_psu_state()
-            self._printer.connect()
-            time.sleep(0.1)
+    def _post_on(self, postOnDelay=0.0, externalPowerOn=False):
 
-            if not self._printer.is_closed_or_error():
-                self._printer.script("psucontrol_post_on", must_be_set=False)
-        elif postOnDelayExpired:
-            self._stop_delay_timer()
-            self.check_psu_state()
-            self._printer.connect()
-            time.sleep(0.1)
+        if externalPowerOn and not self.config['ProcessExternalPowerOn']:
+            return
 
-            if not self._printer.is_closed_or_error():
-                self._printer.script("psucontrol_post_on", must_be_set=False)
-        else:
+        if postOnDelay > 0.1:
             self._start_delay_timer()
+            return
+       
+        self._stop_delay_timer()
+
+        if self.config['connectOnPowerOn'] and self._printer.is_closed_or_error():
+            self._printer.connect()
+            time.sleep(0.1)          
+
+        if not self._printer.is_closed_or_error():
+            self._printer.script("psucontrol_post_on", must_be_set=False)
 
 
     def _idle_poweroff(self):
@@ -542,8 +543,9 @@ class PSUControl(octoprint.plugin.StartupPlugin,
             if self.config['sensingMethod'] not in ('GPIO', 'SYSTEM', 'PLUGIN'):
                 self._noSensing_isPSUOn = True
 
-        self._post_on()
-
+        time.sleep(0.1)
+        self.check_psu_state()
+        
 
     def turn_psu_off(self):
         if self.config['switchingMethod'] in ['GCODE', 'GPIO', 'SYSTEM', 'PLUGIN']:
@@ -617,6 +619,8 @@ class PSUControl(octoprint.plugin.StartupPlugin,
              flask.request.method == 'POST' and
              flask.request.values.get('print', 'false') in valid_boolean_trues):
                 self.on_api_command("turnPSUOn", [])
+                while self._delayTimer:
+                    pass  # force blocking implementation to make sure the api call will be executed after the set delay
         elif ( self.config['turnOnWhenApiUploadPrint'] and
              self.isPSUOn and
              self._printer.is_closed_or_error() and
