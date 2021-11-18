@@ -12,7 +12,7 @@ import subprocess
 import threading
 import glob
 from flask import make_response, jsonify
-from flask_babel import gettext, to_user_timezone
+from flask_babel import gettext
 import platform
 from octoprint.util import fqfn
 from octoprint.settings import valid_boolean_trues
