@@ -215,25 +215,32 @@
     <div class="control-group">
         <div class="controls">
             <label class="checkbox">
-            <input type="checkbox" data-bind="checked: settings.plugins.psucontrol.connectOnPowerOn"> Connect when powered on.
+            <input type="checkbox" data-bind="checked: settings.plugins.psucontrol.connectOnPowerOn"> Connect after powered on internally (eg. by other plugins that control PSUControl).
             </label>
         </div>
     </div>
     <div class="control-group">
         <div class="controls">
             <label class="checkbox">
-            <input type="checkbox" data-bind="checked: settings.plugins.psucontrol.ProcessExternalPowerOn"> Use same routine when powered on externally.
+            <input type="checkbox" data-bind="checked: settings.plugins.psucontrol.turnOnWhenApiUploadPrint"> Connect and start printing after receiving file (eg. from slicer).
             </label>
         </div>
     </div>
     <div class="control-group">
         <div class="controls">
             <label class="checkbox">
-            <input type="checkbox" data-bind="checked: settings.plugins.psucontrol.turnOnWhenApiUploadPrint"> Turn on prior to printing after API upload
+            <input type="checkbox" data-bind="checked: settings.plugins.psucontrol.connectOnApiTurnOn"> Connect after powered on by API or UI.
             </label>
         </div>
     </div>
-    <br />
+    <div class="control-group">
+        <div class="controls">
+            <label class="checkbox">
+            <input type="checkbox" data-bind="checked: settings.plugins.psucontrol.connectOnExternalPowerOn"> Connect after powered on externally (eg. manually controlled relay).
+            </label>
+        </div>
+    </div>
+    <br/>
 
     <h4>Power Off Options</h4>
     <div class="control-group">
