@@ -19,6 +19,8 @@ from octoprint.settings import valid_boolean_trues
 import flask
 from . import cli
 
+from enum import Enum
+
 try:
     import periphery
     HAS_GPIO = True
@@ -42,6 +44,14 @@ try:
 except Exception:
     from .util import ResettableTimer
 
+class TurnOnSource(Enum):
+    DEFAULT = 0     # undefined
+    INTERNAL = 1    # when PSUControl functions are used directly (true for subplugins as well)
+    API_OR_UI = 2   # when command from api or UI
+    UI = 3          # when command from UI
+    API_PRINT = 3   # when API + print command
+    EXTERNAL = 4    # when turned on externally without PSUControl
+    GCODE = 5       # when turned on via GCODE
 
 class PSUControl(octoprint.plugin.StartupPlugin,
                  octoprint.plugin.TemplatePlugin,
@@ -69,7 +79,8 @@ class PSUControl(octoprint.plugin.StartupPlugin,
         self._noSensing_isPSUOn = False
         self.isPSUOn = False
         self.connectionAttempt = 0
-        self.uploadedFile = None
+        self.uploadedFile = None       
+      
         
 
 
@@ -87,8 +98,7 @@ class PSUControl(octoprint.plugin.StartupPlugin,
             enablePseudoOnOff = False,
             pseudoOnGCodeCommand = 'M80',
             pseudoOffGCodeCommand = 'M81',
-            postOnDelay = 0.0,
-            connectOnPowerOn = False,
+            postOnDelay = 0.0,            
             disconnectOnPowerOff = False,
             sensingMethod = 'INTERNAL',
             senseGPIOPin = 0,
@@ -103,10 +113,12 @@ class PSUControl(octoprint.plugin.StartupPlugin,
             powerOffWhenIdle = False,
             idleTimeout = 30,
             idleIgnoreCommands = 'M105',
-            idleTimeoutWaitTemp = 50,
-            turnOnWhenApiUploadPrint = False,
+            idleTimeoutWaitTemp = 50,            
             turnOffWhenError = False,
-            ProcessExternalPowerOn=False
+            connectOnPowerOn = False,
+            connectOnExternalPowerOn=False,
+            connectOnApiTurnOn=False,
+            turnOnWhenApiUploadPrint = False
         )
 
 
@@ -242,7 +254,7 @@ class PSUControl(octoprint.plugin.StartupPlugin,
             self._sub_plugins[k] = implementation
 
 
-    def check_psu_state(self):
+    def check_psu_state(self):        
         self._check_psu_state_event.set()
 
 
@@ -311,41 +323,36 @@ class PSUControl(octoprint.plugin.StartupPlugin,
 
             if (old_isPSUOn != self.isPSUOn):
                 self._logger.debug("PSU state changed, firing psu_state_changed event.")
-
                 event = Events.PLUGIN_PSUCONTROL_PSU_STATE_CHANGED
                 self._event_bus.fire(event, payload=dict(isPSUOn=self.isPSUOn))
                 
             if (old_isPSUOn != self.isPSUOn) and self.isPSUOn:
                 self._start_idle_timer()
                 if not self._check_psu_state_event.is_set():
-                    self._post_on(postOnDelay=self.config['postOnDelay'], externalPowerOn=True)
+                    self._post_on(firstrun=True, TurnOnSource=TurnOnSource.EXTERNAL)
                     self._logger.debug('PSU was turned on externally.')
-                else:
-                    self._post_on(postOnDelay=self.config['postOnDelay'])
+                #else:
+                    #self._post_on(firstrun=True, TurnOnSource=TurnOnSource.DEFAULT)
             elif (old_isPSUOn != self.isPSUOn) and not self.isPSUOn:
                 self._stop_idle_timer()
 
             self._plugin_manager.send_plugin_message(self._identifier, dict(isPSUOn=self.isPSUOn))
             self._check_psu_state_event.clear()
             self._check_psu_state_event.wait(self.config['sensePollingInterval'])
-
-
-
+  
     def _start_idle_timer(self):
         self._stop_idle_timer()
-
         if self.config['powerOffWhenIdle'] and self.isPSUOn:
             self._idleTimer = ResettableTimer(self.config['idleTimeout'] * 60, self._idle_poweroff)
             self._idleTimer.start()
 
 
-    def _start_delay_timer(self, time=0):
+    def _start_delay_timer(self, time):
         self._stop_delay_timer()
-        if time > 0:
-            self._logger.debug(f"Started {time} second delay timer")
+        if time:
+            # self._logger.debug(f"Started {time} second delay timer")
             self._delayTimer = ResettableTimer(time, self._post_on)
-            self._delayTimer.start()
-        
+            self._delayTimer.start() 
 
 
     def _stop_idle_timer(self):
@@ -370,35 +377,51 @@ class PSUControl(octoprint.plugin.StartupPlugin,
             self._start_idle_timer()
 
 
-    def _post_on(self, postOnDelay=0, externalPowerOn=False):
-        if not self.config['connectOnPowerOn']:
-            return
-        if externalPowerOn and not self.config['ProcessExternalPowerOn']:
-            return
-        if postOnDelay > 0:
-            self._start_delay_timer(time=self.config['postOnDelay'])
-            return
-
-        #stuff below this comment will be executed after the connection delay       
-        self._stop_delay_timer()
-        if self._printer.is_closed_or_error: self._printer.connect()
-        #self.sleep(0.5) ## using this breaks stuff
-        if self._printer.is_ready():
-            self._logger.debug("Printer is ready")
-            self._printer.script("psucontrol_post_on", must_be_set=False)
-            if self.uploadedFile is not None:
-                self._printer.select_file(self.uploadedFile,False,True)
-                self.uploadedFile = None
+    def _post_on(self, firstrun=False, TurnOnSource=TurnOnSource.INTERNAL):
+        if firstrun:
             self.connectionAttempt = 0
+            self._logger.debug(f"Last turn on source: {TurnOnSource.name}")
+            if (TurnOnSource == TurnOnSource.INTERNAL and not self.config['connectOnPowerOn']):
+                return
+            elif (TurnOnSource == TurnOnSource.EXTERNAL and not self.config['connectOnExternalPowerOn']):
+                return
+            elif (TurnOnSource == TurnOnSource.API_OR_UI and not self.config['connectOnApiTurnOn']):
+                return
+            if(self.config['postOnDelay'] > 0):
+                self._start_delay_timer(time=self.config['postOnDelay'])            
+                return
+
+        # code below this comment will be executed after the connection delay        
+        if self._printer.is_operational() and self.uploadedFile is None:
+            # connected -> job done
+            self._logger.debug("Printer connected")
+            #self._printer.script("psucontrol_post_on", must_be_set=False)
+            return
+        elif self._printer.is_ready():
+            # connected, ready for printing the file received earlier -> job done
+            self._logger.debug("Printer is ready, starting print")
+            self._printer.script("psucontrol_post_on", must_be_set=False)
+            if self.uploadedFile is not None:                
+                self._printer.select_file(self.uploadedFile,sd=False,printAfterSelect=True)
+                self.uploadedFile = None
+            return
         else:
-            self.connectionAttempt+=1
-            if self.connectionAttempt > 19:
+            # not connected. Retry via timer until success or abort.
+            self._start_delay_timer(time=1.0)
+            self.connectionAttempt += 1 
+            if self._printer.is_error() and self.connectionAttempt == 1:
+                self._logger.debug("Printer in error mode - try disconnect first")
+                self._printer.disconnect()
+                return
+            is_ready_for_connect = (self._printer.get_connection_options()['ports'] and self._printer.get_state_string() not in ("Detecting serial connection","Opening serial connection","Connecting"))
+            if self.connectionAttempt >= 20:
                 self._logger.warning(f"Printer not ready after 20 attempts..aborting")
-                self.connectionAttempt = 0                    
+                self._stop_delay_timer()
+            if is_ready_for_connect:
+                self._logger.debug("Printer serial port is available, attempting connection")
+                self._printer.connect()
             else:                
                 self._logger.debug(f"Printer not ready yet..trying again in 1s..attempt {self.connectionAttempt}")
-                self._start_delay_timer(time=1)
-
 
     def _idle_poweroff(self):
         if not self.config['powerOffWhenIdle']:
@@ -488,7 +511,7 @@ class PSUControl(octoprint.plugin.StartupPlugin,
 
         if self.config['enablePseudoOnOff']:
             if gcode == self.config['pseudoOnGCodeCommand']:
-                self.turn_psu_on()
+                self.turn_psu_on(TurnOnSource=TurnOnSource.GCODE)
                 comm_instance._log("PSUControl: ok")
                 skipQueuing = True
             elif gcode == self.config['pseudoOffGCodeCommand']:
@@ -498,7 +521,7 @@ class PSUControl(octoprint.plugin.StartupPlugin,
 
         if (not self.isPSUOn and self.config['autoOn'] and (gcode in self._autoOnTriggerGCodeCommandsArray)):
             self._logger.info("Auto-On - Turning PSU On (Triggered by {})".format(gcode))
-            self.turn_psu_on()
+            self.turn_psu_on(TurnOnSource=TurnOnSource.GCODE)
 
         if self.config['powerOffWhenIdle'] and self.isPSUOn and not self._skipIdleTimer:
             if not (gcode in self._idleIgnoreCommandsArray):
@@ -509,7 +532,7 @@ class PSUControl(octoprint.plugin.StartupPlugin,
             return (None,)
 
 
-    def turn_psu_on(self):
+    def turn_psu_on(self, TurnOnSource=TurnOnSource.INTERNAL):        
         if self.config['switchingMethod'] in ['GCODE', 'GPIO', 'SYSTEM', 'PLUGIN']:
             self._logger.info("Switching PSU On")
             if self.config['switchingMethod'] == 'GCODE':
@@ -559,10 +582,12 @@ class PSUControl(octoprint.plugin.StartupPlugin,
 
             if self.config['sensingMethod'] not in ('GPIO', 'SYSTEM', 'PLUGIN'):
                 self._noSensing_isPSUOn = True
-
+                
         time.sleep(0.1)
         self.check_psu_state()
+        self._post_on(firstrun=True, TurnOnSource=TurnOnSource)
         
+           
 
     def turn_psu_off(self):
         if self.config['switchingMethod'] in ['GCODE', 'GPIO', 'SYSTEM', 'PLUGIN']:
@@ -621,33 +646,31 @@ class PSUControl(octoprint.plugin.StartupPlugin,
             if self.config['sensingMethod'] not in ('GPIO', 'SYSTEM', 'PLUGIN'):
                 self._noSensing_isPSUOn = False
 
-            time.sleep(0.1)
+            time.sleep(0.1)            
             self.check_psu_state()
 
 
-    def get_psu_state(self):
+    def get_psu_state(self):        
         return self.isPSUOn
 
 
     def turn_on_before_printing_after_upload(self):
-        if ( self.config['turnOnWhenApiUploadPrint'] and
-             not self.isPSUOn and
-             flask.request.path.startswith('/api/files/') and
-             flask.request.method == 'POST' and
-             flask.request.values.get('print', 'false') in valid_boolean_trues):
-                self.uploadedFile=flask.request.values.get("file.name")
-                self._logger.debug("Starting PSU on file upload")
-                self.turn_psu_on()
-                
-                time.sleep(self.config['postOnDelay'])
-        elif ( self.config['turnOnWhenApiUploadPrint'] and
-             self.isPSUOn and
-             self._printer.is_closed_or_error() and
-             flask.request.path.startswith('/api/files/') and
-             flask.request.method == 'POST' and
-             flask.request.values.get('print', 'false') in valid_boolean_trues):
-                self._printer.connect()
-                time.sleep(0.1)  
+        if not self.config['turnOnWhenApiUploadPrint']:
+            return
+        
+        if (not flask.request.path.startswith('/api/files/') or
+            not flask.request.method == 'POST' or
+            not flask.request.values.get("print") in valid_boolean_trues):
+            return        
+
+        if not self.isPSUOn:
+            self._logger.debug("Starting PSU on file upload")
+            self.uploadedFile=flask.request.values.get("file.name")
+            self.turn_psu_on(TurnOnSource=TurnOnSource.API_PRINT)
+        elif self._printer.is_closed_or_error():
+            self._logger.debug("PSU already on - connecting to printer after file upload")
+            self._printer.connect()
+            time.sleep(0.1)
 
 
     def on_event(self, event, payload):
@@ -688,16 +711,21 @@ class PSUControl(octoprint.plugin.StartupPlugin,
             except:
                 if not user_permission.can():
                     return make_response("Insufficient rights", 403)
-
-        if command == 'turnPSUOn':
-            self.turn_psu_on()
+        
+        if command == 'turnPSUOn':            
+            self.turn_psu_on(TurnOnSource=TurnOnSource.API_OR_UI)            
         elif command == 'turnPSUOff':
             self.turn_psu_off()
         elif command == 'togglePSU':
             if self.isPSUOn:
                 self.turn_psu_off()
-            else:
-                self.turn_psu_on()
+            else:                
+                self.turn_psu_on(TurnOnSource=TurnOnSource.API_OR_UI)
+        elif command == 'togglePSU_UI':
+            if self.isPSUOn:
+                self.turn_psu_off()
+            else:                
+                self.turn_psu_on(TurnOnSource=TurnOnSource.UI)  
         elif command == 'getPSUState':
             return jsonify(isPSUOn=self.isPSUOn)
 
