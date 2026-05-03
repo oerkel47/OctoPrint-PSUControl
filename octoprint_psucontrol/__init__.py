@@ -34,10 +34,7 @@ except ValueError:
 
 SUPPORTS_LINE_BIAS = KERNEL_VERSION >= (5, 5)
 
-try:
-    from octoprint.access.permissions import Permissions
-except Exception:
-    from octoprint.server import user_permission
+from octoprint.access.permissions import Permissions
 
 try:
     from octoprint.util import ResettableTimer
@@ -81,7 +78,10 @@ class PSUControl(octoprint.plugin.StartupPlugin,
         self.connectionAttempt = 0
         self.uploadedFile = None       
       
-        
+    def is_template_autoescaped(self):
+        return True
+    def is_api_protected(self):
+        return True    
 
 
     def get_settings_defaults(self):
@@ -696,38 +696,34 @@ class PSUControl(octoprint.plugin.StartupPlugin,
         return self.on_api_command("getPSUState", [])
 
 
-    def on_api_command(self, command, data):
-        if command in ['turnPSUOn', 'turnPSUOff', 'togglePSU']:
-            try:
+    def on_api_command(self, command, data):        
+        match command:
+            case 'turnPSUOn':
+                if not Permissions.PLUGIN_PSUCONTROL_CONTROL.can():
+                    return make_response("Insufficient rights", 403)          
+                self.turn_psu_on(TurnOnSource=TurnOnSource.API_OR_UI)            
+            case 'turnPSUOff':
                 if not Permissions.PLUGIN_PSUCONTROL_CONTROL.can():
                     return make_response("Insufficient rights", 403)
-            except:
-                if not user_permission.can():
+                self.turn_psu_off()
+            case 'togglePSU':
+                if not Permissions.PLUGIN_PSUCONTROL_CONTROL.can():
                     return make_response("Insufficient rights", 403)
-        elif command in ['getPSUState']:
-            try:
+                elif self.isPSUOn:
+                    self.turn_psu_off()
+                else:
+                    self.turn_psu_on(TurnOnSource=TurnOnSource.API_OR_UI)
+            case 'togglePSU_UI':
+                if not Permissions.PLUGIN_PSUCONTROL_CONTROL.can():
+                    return make_response("Insufficient rights", 403)
+                elif self.isPSUOn:
+                    self.turn_psu_off()
+                else:                
+                    self.turn_psu_on(TurnOnSource=TurnOnSource.UI)  
+            case 'getPSUState':
                 if not Permissions.STATUS.can():
                     return make_response("Insufficient rights", 403)
-            except:
-                if not user_permission.can():
-                    return make_response("Insufficient rights", 403)
-        
-        if command == 'turnPSUOn':            
-            self.turn_psu_on(TurnOnSource=TurnOnSource.API_OR_UI)            
-        elif command == 'turnPSUOff':
-            self.turn_psu_off()
-        elif command == 'togglePSU':
-            if self.isPSUOn:
-                self.turn_psu_off()
-            else:                
-                self.turn_psu_on(TurnOnSource=TurnOnSource.API_OR_UI)
-        elif command == 'togglePSU_UI':
-            if self.isPSUOn:
-                self.turn_psu_off()
-            else:                
-                self.turn_psu_on(TurnOnSource=TurnOnSource.UI)  
-        elif command == 'getPSUState':
-            return jsonify(isPSUOn=self.isPSUOn)
+                return jsonify(isPSUOn=self.isPSUOn)
 
 
     def on_settings_save(self, data):
