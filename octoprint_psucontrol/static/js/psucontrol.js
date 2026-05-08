@@ -117,17 +117,17 @@ $(function() {
                     self.turnPSUOff();
                 }
             } else {
-                self.turnPSUOn();
+                self.turnPSUOn_UI();
             }
         };
 
-        self.turnPSUOn = function() {
+        self.turnPSUOn_UI = function() {
             $.ajax({
                 url: API_BASEURL + "plugin/psucontrol",
                 type: "POST",
                 dataType: "json",
                 data: JSON.stringify({
-                    command: "turnPSUOn"
+                    command: "turnPSUOn_UI"
                 }),
                 contentType: "application/json; charset=UTF-8"
             })
