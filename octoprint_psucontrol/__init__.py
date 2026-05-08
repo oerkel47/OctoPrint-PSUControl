@@ -17,13 +17,13 @@ import platform
 from octoprint.util import fqfn
 from octoprint.util.version import is_octoprint_compatible
 from octoprint.settings import valid_boolean_trues
-from octoprint.filemanager.destinations import FileDestinations
-from octoprint.printer.connection import ConnectedPrinterState
-from octoprint.printer.connection import ConnectedPrinter
 import flask
 from . import cli
-
 from enum import Enum
+if is_octoprint_compatible(">=2"):
+    from octoprint.filemanager.destinations import FileDestinations
+    from octoprint.printer.connection import ConnectedPrinterState
+    from octoprint.printer.connection import ConnectedPrinter
 
 try:
     import periphery
