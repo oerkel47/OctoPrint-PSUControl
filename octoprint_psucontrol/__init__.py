@@ -269,11 +269,7 @@ class PSUControl(octoprint.plugin.StartupPlugin,
                     r = self._configuredGPIOPins['sense'].read()
                 except Exception:
                     self._logger.exception("Exception while reading GPIO line")
-
-                self._logger.debug("Result: {}".format(r))
-
                 new_isPSUOn = r ^ self.config['invertsenseGPIOPin']
-
                 self.isPSUOn = new_isPSUOn
             elif self.config['sensingMethod'] == 'SYSTEM':
                 new_isPSUOn = False
