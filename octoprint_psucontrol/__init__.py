@@ -122,7 +122,6 @@ class PSUControl(octoprint.plugin.StartupPlugin,
             turnOffWhenError = False,
             connectOnPowerOn = False,
             connectOnExternalPowerOn=False,
-            connectOnApiTurnOn=False,
             turnOnWhenApiUploadPrint = False
         )
 
@@ -258,16 +257,12 @@ class PSUControl(octoprint.plugin.StartupPlugin,
             self._sub_plugins[k] = implementation
 
 
-    def check_psu_state(self):      
-        self._check_psu_state_event.set()
-
+    def check_psu_state(self):
+        self._check_psu_state_event.wait(0.5)
 
     def _check_psu_state(self):        
         while True:
             old_isPSUOn = self.isPSUOn
-
-            self._logger.debug("Polling PSU state...")
-
             if self.config['sensingMethod'] == 'GPIO':
                 r = 0
                 try:
@@ -300,9 +295,7 @@ class PSUControl(octoprint.plugin.StartupPlugin,
                 self.isPSUOn = self._noSensing_isPSUOn
             elif self.config['sensingMethod'] == 'PLUGIN':
                 p = self.config['sensingPlugin']
-
                 r = False
-
                 if p not in self._sub_plugins:
                     self._logger.error('Plugin {} is configured for sensing but it is not registered.'.format(p))
                 elif not hasattr(self._sub_plugins[p], 'get_psu_state'):
@@ -325,23 +318,23 @@ class PSUControl(octoprint.plugin.StartupPlugin,
 
             self._logger.debug("isPSUOn: {}".format(self.isPSUOn))
 
-            if (old_isPSUOn != self.isPSUOn):
+            if old_isPSUOn != self.isPSUOn:
                 self._logger.debug("PSU state changed, firing psu_state_changed event.")
                 event = Events.PLUGIN_PSUCONTROL_PSU_STATE_CHANGED
                 self._event_bus.fire(event, payload=dict(isPSUOn=self.isPSUOn))
                 
-            if (old_isPSUOn != self.isPSUOn) and self.isPSUOn:
+            if old_isPSUOn != self.isPSUOn and self.isPSUOn:
                 self._start_idle_timer()
                 if not self._temp_switchedOn:
                     self._post_on(firstrun=True, TurnOnSource=TurnOnSource.EXTERNAL)
                     self._logger.debug('PSU was turned on externally.')         
-            elif (old_isPSUOn != self.isPSUOn) and not self.isPSUOn:
+            elif old_isPSUOn != self.isPSUOn and not self.isPSUOn:
                 self._stop_idle_timer()
 
-            self._plugin_manager.send_plugin_message(self._identifier, dict(isPSUOn=self.isPSUOn))
+            self._plugin_manager.send_plugin_message(self._identifier, dict(isPSUOn=self.isPSUOn))      
+            self._temp_switchedOn = False
             self._check_psu_state_event.clear()
             self._check_psu_state_event.wait(self.config['sensePollingInterval'])
-            self._temp_switchedOn = False
   
     def _start_idle_timer(self):
         self._stop_idle_timer()
@@ -416,7 +409,6 @@ class PSUControl(octoprint.plugin.StartupPlugin,
       
         if self._printer.is_ready():
             # connected, ready for printing the file received earlier -> job done
-            self._logger.debug("Printer is ready, starting print")
             self._printer.script("psucontrol_post_on", must_be_set=False)  
             if self.uploadedFile is not None:
                 target = self.uploadedFile.split("/")[0]
@@ -424,6 +416,8 @@ class PSUControl(octoprint.plugin.StartupPlugin,
                 
                 if filepath.startswith("/"):
                     filepath = filepath[1:]
+                
+                self._logger.debug(f"Printer is ready, starting to print file {filepath} from {target}")
                 
                 if target == "sdcard" or target == "printer":
                     target = FileDestinations.PRINTER
@@ -451,7 +445,6 @@ class PSUControl(octoprint.plugin.StartupPlugin,
             if is_octoprint_compatible(">= 2"):
                 if self._printer_try_connect():
                     self._logger.debug("Printer serial port is available, attempting connection")
-                    self._stop_delay_timer()
                 elif self.connectionAttempt >= max_attempts:
                     self._logger.warning(f"Printer not ready after {max_attempts} attempts..aborting")
                     self._stop_delay_timer()
